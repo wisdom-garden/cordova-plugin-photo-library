@@ -4,3 +4,6 @@ tcc.db-shm
 tcc.db-wal
 osx-local-error.txt
 iPod Photo Cache/
+.idea/
+.DS_Store
+cordova-plugin-photo-library-*.tgz
