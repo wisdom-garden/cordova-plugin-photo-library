@@ -1,0 +1,11 @@
+.travis.yml
+
+# Logs
+logs
+*.log
+npm-debug.log*
+cordova-plugin-photo-library-*.tgz
+package-upload.js
+package-upload.sh
+.nvmrc
+.tests
