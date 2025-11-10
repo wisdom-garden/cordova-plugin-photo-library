@@ -1,6 +1,6 @@
+import Cordova
 import Photos
 import Foundation
-import AssetsLibrary // TODO: needed for deprecated functionality
 import MobileCoreServices
 
 extension PHAsset {
@@ -495,12 +495,19 @@ final class PhotoLibraryService {
         // Permission was manually denied by user, open settings screen
         let settingsUrl = URL(string: UIApplication.openSettingsURLString)
         if let url = settingsUrl {
-            UIApplication.shared.openURL(url)
-            // TODO: run callback only when return ?
-            // Do not call success, as the app will be restarted when user changes permission
+            if #available(iOS 10.0, *) {
+                UIApplication.shared.open(url, options: [:], completionHandler: { success in
+                    // TODO: run callback only when return ?
+                    // Do not call success, as the app will be restarted when user changes permission
+                })
+            } else {
+                // iOS < 10 fallback
+                let _ = UIApplication.shared.openURL(url)
+            }
         } else {
             failure("could not open settings url")
         }
+
 
     }
 
@@ -518,55 +525,62 @@ final class PhotoLibraryService {
             return
         }
 
-        let assetsLibrary = ALAssetsLibrary()
+        func saveToAlbum(_ photoAlbum: PHAssetCollection) {
 
-        func saveImage(_ photoAlbum: PHAssetCollection) {
-            assetsLibrary.writeImageData(toSavedPhotosAlbum: sourceData, metadata: nil) { (assetUrl: URL?, error: Error?) in
+               var placeholder: PHObjectPlaceholder?
 
-                if error != nil {
-                    completion(nil, "Could not write image to album: \(error)")
-                    return
-                }
+               PHPhotoLibrary.shared().performChanges({
 
-                guard let assetUrl = assetUrl else {
-                    completion(nil, "Writing image to album resulted empty asset")
-                    return
-                }
+                   // 创建 PHAsset
+                   let creationRequest = PHAssetCreationRequest.forAsset()
+                   creationRequest.addResource(with: .photo, data: sourceData, options: nil)
+                   placeholder = creationRequest.placeholderForCreatedAsset
 
-                self.putMediaToAlbum(assetsLibrary, url: assetUrl, album: album, completion: { (error) in
-                    if error != nil {
-                        completion(nil, error)
-                    } else {
-                        let fetchResult = PHAsset.fetchAssets(withALAssetURLs: [assetUrl], options: nil)
-                        var libraryItem: NSDictionary? = nil
-                        if fetchResult.count == 1 {
-                            let asset = fetchResult.firstObject
-                            if let asset = asset {
-                                libraryItem = self.assetToLibraryItem(asset: asset, useOriginalFileNames: false, includeAlbumData: true)
-                            }
-                        }
-                        completion(libraryItem, nil)
-                    }
-                })
+               }, completionHandler: { success, error in
 
-            }
-        }
+                   if !success || placeholder == nil {
+                       completion(nil, "Could not write image to album: \(error?.localizedDescription ?? "unknown error")")
+                       return
+                   }
 
-        if let photoAlbum = PhotoLibraryService.getPhotoAlbum(album) {
-            saveImage(photoAlbum)
-            return
-        }
+                   // 将 asset 添加到指定相册
+                   PHPhotoLibrary.shared().performChanges({
+                       if let assetCollectionChangeRequest = PHAssetCollectionChangeRequest(for: photoAlbum),
+                          let assetPlaceholder = placeholder {
+                           assetCollectionChangeRequest.addAssets([assetPlaceholder] as NSArray)
+                       }
+                   }, completionHandler: { success, error in
 
-        PhotoLibraryService.createPhotoAlbum(album) { (photoAlbum: PHAssetCollection?, error: String?) in
+                       if !success {
+                           completion(nil, "Could not add image to album: \(error?.localizedDescription ?? "unknown error")")
+                           return
+                       }
 
-            guard let photoAlbum = photoAlbum else {
-                completion(nil, error)
-                return
-            }
+                       // 获取 PHAsset 并转换成 library item
+                       let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [placeholder!.localIdentifier], options: nil)
+                       var libraryItem: NSDictionary? = nil
+                       if let asset = fetchResult.firstObject {
+                           libraryItem = self.assetToLibraryItem(asset: asset, useOriginalFileNames: false, includeAlbumData: true)
+                       }
+                       completion(libraryItem, nil)
+                   })
+               })
+           }
 
-            saveImage(photoAlbum)
+           // 检查相册是否存在
+           if let photoAlbum = PhotoLibraryService.getPhotoAlbum(album) {
+               saveToAlbum(photoAlbum)
+               return
+           }
 
-        }
+           // 相册不存在则创建
+           PhotoLibraryService.createPhotoAlbum(album) { (photoAlbum: PHAssetCollection?, error: String?) in
+               guard let photoAlbum = photoAlbum else {
+                   completion(nil, error)
+                   return
+               }
+               saveToAlbum(photoAlbum)
+           }
 
     }
 
@@ -577,72 +591,60 @@ final class PhotoLibraryService {
             return
         }
 
-        let assetsLibrary = ALAssetsLibrary()
 
-        func saveVideo(_ photoAlbum: PHAssetCollection) {
+        func saveToAlbum(_ photoAlbum: PHAssetCollection) {
 
-            // TODO: new way, seems not supports dataURL
-            //            if !UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(videoURL.relativePath!) {
-            //                completion(url: nil, error: "Provided video is not compatible with Saved Photo album")
-            //                return
-            //            }
-            //            UISaveVideoAtPathToSavedPhotosAlbum(videoURL.relativePath!, nil, nil, nil)
+            var placeholder: PHObjectPlaceholder?
 
-            if !assetsLibrary.videoAtPathIs(compatibleWithSavedPhotosAlbum: videoURL) {
+            // 写入视频到相册
+            PHPhotoLibrary.shared().performChanges({
+                let creationRequest = PHAssetCreationRequest.forAsset()
+                creationRequest.addResource(with: .video, fileURL: videoURL, options: nil)
+                placeholder = creationRequest.placeholderForCreatedAsset
+            }, completionHandler: { success, error in
 
-                // TODO: try to convert to MP4 as described here?: http://stackoverflow.com/a/39329155/1691132
-
-                completion(nil, "Provided video is not compatible with Saved Photo album")
-                return
-            }
-
-            assetsLibrary.writeVideoAtPath(toSavedPhotosAlbum: videoURL) { (assetUrl: URL?, error: Error?) in
-
-                if error != nil {
-                    completion(nil, "Could not write video to album: \(error)")
+                if !success || placeholder == nil {
+                    completion(nil, "Could not write video to album: \(error?.localizedDescription ?? "unknown error")")
                     return
                 }
 
-                guard let assetUrl = assetUrl else {
-                    completion(nil, "Writing video to album resulted empty asset")
-                    return
-                }
-
-                self.putMediaToAlbum(assetsLibrary, url: assetUrl, album: album, completion: { (error) in
-
-
-                    if error != nil {
-                        completion(nil, error)
-                    } else {
-                        let fetchResult = PHAsset.fetchAssets(withALAssetURLs: [assetUrl], options: nil)
-                        var libraryItem: NSDictionary? = nil
-                        if fetchResult.count == 1 {
-                            let asset = fetchResult.firstObject
-                            if let asset = asset {
-                                libraryItem = self.assetToLibraryItem(asset: asset, useOriginalFileNames: false, includeAlbumData: true)
-                            }
-                        }
-                        completion(libraryItem, nil)
+                // 将视频 asset 添加到指定相册
+                PHPhotoLibrary.shared().performChanges({
+                    if let assetCollectionChangeRequest = PHAssetCollectionChangeRequest(for: photoAlbum),
+                       let assetPlaceholder = placeholder {
+                        assetCollectionChangeRequest.addAssets([assetPlaceholder] as NSArray)
                     }
-                })
-            }
+                }, completionHandler: { success, error in
 
+                    if !success {
+                        completion(nil, "Could not add video to album: \(error?.localizedDescription ?? "unknown error")")
+                        return
+                    }
+
+                    // 获取 PHAsset 并转换成 library item
+                    let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [placeholder!.localIdentifier], options: nil)
+                    var libraryItem: NSDictionary? = nil
+                    if let asset = fetchResult.firstObject {
+                        libraryItem = self.assetToLibraryItem(asset: asset, useOriginalFileNames: false, includeAlbumData: true)
+                    }
+                    completion(libraryItem, nil)
+                })
+            })
         }
 
+        // 检查相册是否存在
         if let photoAlbum = PhotoLibraryService.getPhotoAlbum(album) {
-            saveVideo(photoAlbum)
+            saveToAlbum(photoAlbum)
             return
         }
 
+        // 相册不存在则创建
         PhotoLibraryService.createPhotoAlbum(album) { (photoAlbum: PHAssetCollection?, error: String?) in
-
             guard let photoAlbum = photoAlbum else {
                 completion(nil, error)
                 return
             }
-
-            saveVideo(photoAlbum)
-
+            saveToAlbum(photoAlbum)
         }
 
     }
@@ -689,33 +691,6 @@ final class PhotoLibraryService {
             return fileContent
 
         }
-    }
-
-    fileprivate func putMediaToAlbum(_ assetsLibrary: ALAssetsLibrary, url: URL, album: String, completion: @escaping (_ error: String?)->Void) {
-
-        assetsLibrary.asset(for: url, resultBlock: { (asset: ALAsset?) in
-
-            guard let asset = asset else {
-                completion("Retrieved asset is nil")
-                return
-            }
-
-            PhotoLibraryService.getAlPhotoAlbum(assetsLibrary, album: album, completion: { (alPhotoAlbum: ALAssetsGroup?, error: String?) in
-
-                if error != nil {
-                    completion("getting photo album caused error: \(error)")
-                    return
-                }
-
-                alPhotoAlbum!.add(asset)
-                completion(nil)
-
-            })
-
-        }, failureBlock: { (error: Error?) in
-            completion("Could not retrieve saved asset: \(error)")
-        })
-
     }
 
     fileprivate static func image2PictureData(_ image: UIImage, quality: Float) -> PictureData? {
@@ -786,34 +761,8 @@ final class PhotoLibraryService {
                 completion(photoAlbum, nil)
             }
             else {
-                completion(nil, "\(error)")
+                completion(nil, error?.localizedDescription ?? "unknown error")
             }
         }
     }
-
-    fileprivate static func getAlPhotoAlbum(_ assetsLibrary: ALAssetsLibrary, album: String, completion: @escaping (_ alPhotoAlbum: ALAssetsGroup?, _ error: String?)->Void) {
-
-        var groupPlaceHolder: ALAssetsGroup?
-
-        assetsLibrary.enumerateGroupsWithTypes(ALAssetsGroupAlbum, usingBlock: { (group: ALAssetsGroup?, _ ) in
-
-            guard let group = group else { // done enumerating
-                guard let groupPlaceHolder = groupPlaceHolder else {
-                    completion(nil, "Could not find album")
-                    return
-                }
-                completion(groupPlaceHolder, nil)
-                return
-            }
-
-            if group.value(forProperty: ALAssetsGroupPropertyName) as? String == album {
-                groupPlaceHolder = group
-            }
-
-        }, failureBlock: { (error: Error?) in
-            completion(nil, "Could not enumerate assets library")
-        })
-
-    }
-
 }

@@ -5,10 +5,11 @@ const os = require("os");
 const fs = require("fs");
 const { execSync } = require("child_process");
 
-const { name, version } = require("./package.json");
+const { name, version, wgVersoin } = require("./package.json");
 
 const packFileName = `${name}-${version}.tgz`;
-const bucketFilePath = `plugins/capacitor/${packFileName}`;
+const packFileUploadName = `${name}-${version}-${wgVersoin}.tgz`;
+const bucketFilePath = `plugins/capacitor/${packFileUploadName}`;
 
 if (fs.existsSync(packFileName)) {
   fs.unlinkSync(packFileName);
@@ -22,14 +23,14 @@ try {
     `qshell fput --overwrite lms-mobile ${bucketFilePath} ${packFileName}`
   ).toString();
 
-  console.log("🤞")
+  console.log("🤞");
   console.info(result);
   uploadSuccess = result.toString().match(/Put file .* success!/gi);
 } catch (err) {
-  console.error(err)
+  console.error(err);
 }
 
 if (uploadSuccess) {
-  console.log("✌️")
-  console.log(`https://mobile-download.tronclass.com.cn/${bucketFilePath}`)
+  console.log("✌️");
+  console.log(`https://mobile-download.tronclass.com.cn/${bucketFilePath}`);
 }
